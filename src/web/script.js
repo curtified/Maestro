@@ -550,163 +550,131 @@ class MaestroApp {
 // Initialize the app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     window.maestroApp = new MaestroApp();
-    // Expose openLogModal globally for native menu access
-    window.openLogModal = openLogModal;
-    // Expose debug functions
-    window.testBackendConnection = testBackendConnection;
-    window.setBackendPort = setBackendPort;
+    
+    // Log Modal Functions
+    const logModal = document.getElementById('logModal');
+    const logFileInfoSpan = document.getElementById('logFileInfo');
+    const logContentPre = document.getElementById('logContent');
+
+    async function fetchLogInfo() {
+        logFileInfoSpan.textContent = 'Loading log info...';
+        if (!window.maestroApp || !window.maestroApp.backendPort) {
+            logFileInfoSpan.textContent = 'Error: Backend not connected.';
+            return;
+        }
+        try {
+            const response = await fetch(`http://localhost:${window.maestroApp.backendPort}/api/log-info`);
+            if (!response.ok) {
+                throw new Error(`HTTP error ${response.status}`);
+            }
+            const data = await response.json();
+            logFileInfoSpan.textContent = `Path: ${data.log_file || 'N/A'} | Size: ${data.log_size_human || 'N/A'} | Exists: ${data.log_exists ? 'Yes' : 'No'}`;
+        } catch (error) {
+            logFileInfoSpan.textContent = `Error fetching log info: ${error.message}`;
+            console.error('Error fetching log info:', error);
+        }
+    }
+
+    async function fetchLogContent() {
+        logContentPre.textContent = 'Loading log content...';
+        if (!window.maestroApp || !window.maestroApp.backendPort) {
+            logContentPre.textContent = 'Error: Backend not connected.';
+            return;
+        }
+        try {
+            const response = await fetch(`http://localhost:${window.maestroApp.backendPort}/api/log-content`);
+            if (!response.ok) {
+                if (response.status === 404) {
+                    logContentPre.textContent = 'Log file not found or empty. Install some files to generate logs.';
+                } else {
+                    throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+                }
+            } else {
+                const text = await response.text();
+                logContentPre.textContent = text || 'Log file is empty.';
+            }
+        } catch (error) {
+            logContentPre.textContent = `Error fetching log content: ${error.message}`;
+            console.error('Error fetching log content:', error);
+        }
+    }
+
+    function openLogModal_internal() {
+        logModal.style.display = 'flex';
+        fetchLogInfo();
+        fetchLogContent();
+    }
+    // Expose openLogModal globally for native menu access AND for any existing debug functions
+    window.openLogModal = openLogModal_internal;
+
+    function closeLogModal_internal() {
+        logModal.style.display = 'none';
+    }
+
+    async function copyLogToClipboard_internal() {
+        try {
+            await navigator.clipboard.writeText(logContentPre.textContent);
+            window.maestroApp.showToast('Log copied to clipboard!', 'success');
+        } catch (err) {
+            console.error('Failed to copy log: ', err);
+            window.maestroApp.showToast('Failed to copy log. See console.', 'error');
+        }
+    }
+
+    // Event Listeners for Log Modal
+    document.getElementById('closeLogModal').addEventListener('click', closeLogModal_internal);
+    document.getElementById('closeLogModalBtn').addEventListener('click', closeLogModal_internal);
+    document.getElementById('refreshLogBtn').addEventListener('click', () => {
+        fetchLogInfo();
+        fetchLogContent();
+    });
+    document.getElementById('copyLogBtn').addEventListener('click', copyLogToClipboard_internal);
+
+    logModal.addEventListener('click', (event) => {
+        if (event.target === logModal) { // Clicked on the overlay itself
+            closeLogModal_internal();
+        }
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && logModal.style.display === 'flex') {
+            closeLogModal_internal();
+        }
+    });
+
+    // Expose debug functions (if they were intended to be global)
+    // These are kept from the original script but might be removed if not needed.
+    window.testBackendConnection = async function(port) { // Made it a global function
+        if (port) {
+            window.maestroApp.backendPort = port;
+        }
+        console.log('🔍 Testing backend connection on port:', window.maestroApp.backendPort);
+        try {
+            const response = await fetch(`http://localhost:${window.maestroApp.backendPort}/api/debug`);
+            const data = await response.json();
+            console.log('✅ Backend connection successful:', data);
+            return data;
+        } catch (error) {
+            console.error('❌ Backend connection failed:', error);
+            return null;
+        }
+    };
+
+    window.setBackendPort = function(port) { // Made it a global function
+        window.maestroApp.backendPort = port;
+        window.MAESTRO_BACKEND_PORT = port; // If this global var is still used
+        console.log('🔧 Backend port manually set to:', port);
+    };
 });
 
-// Debug function to test backend connection
-async function testBackendConnection(port) {
-    if (port) {
-        window.maestroApp.backendPort = port;
-    }
-    
-    console.log('🔍 Testing backend connection on port:', window.maestroApp.backendPort);
-    
-    try {
-        const response = await fetch(`http://localhost:${window.maestroApp.backendPort}/api/debug`);
-        const data = await response.json();
-        console.log('✅ Backend connection successful:', data);
-        return data;
-    } catch (error) {
-        console.error('❌ Backend connection failed:', error);
-        return null;
-    }
-}
 
-// Function to manually set backend port
-function setBackendPort(port) {
-    window.maestroApp.backendPort = port;
-    window.MAESTRO_BACKEND_PORT = port;
-    console.log('🔧 Backend port manually set to:', port);
-}
-
-// Handle native responses
+// Handle native responses (kept from original script, might need review based on actual native calls)
 window.handleNativeResponse = function(response) {
-    // This will be overridden by specific request handlers
-    console.log('Native response:', response);
+    // This will be overridden by specific request handlers like in requestPassword()
+    console.log('Global Native response handler:', response);
 };
 
-// Setup modal handlers when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    // Modal close buttons
-    document.getElementById('closeLogModal').addEventListener('click', closeLogModal);
-    document.getElementById('closeLogModalBtn').addEventListener('click', closeLogModal);
-
-    // Refresh log button
-    document.getElementById('refreshLogBtn').addEventListener('click', refreshLogContent);
-
-    // Copy log button
-    document.getElementById('copyLogBtn').addEventListener('click', copyLogToClipboard);
-
-    // Close modal when clicking outside
-    document.getElementById('logModal').addEventListener('click', (e) => {
-        if (e.target.id === 'logModal') {
-            closeLogModal();
-        }
-    });
-
-    // Close modal with Escape key
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && document.getElementById('logModal').style.display !== 'none') {
-            closeLogModal();
-        }
-    });
-});
-
-async function openLogModal() {
-    document.getElementById('logModal').style.display = 'flex';
-    document.getElementById('logContent').textContent = 'Loading log...';
-    
-    try {
-        await refreshLogContent();
-    } catch (error) {
-        document.getElementById('logContent').textContent = `Error loading log: ${error.message}`;
-        document.getElementById('logFileInfo').textContent = 'Error loading log information';
-    }
-}
-
-async function refreshLogContent() {
-    try {
-        const logInfo = await getLogInfo();
-        const logContent = await getLogContent();
-        
-        document.getElementById('logFileInfo').textContent = `Log file: ${logInfo.filename || 'No log file found'}`;
-        document.getElementById('logContent').textContent = logContent;
-    } catch (error) {
-        document.getElementById('logContent').textContent = `Error loading log: ${error.message}`;
-        document.getElementById('logFileInfo').textContent = 'Error loading log information';
-    }
-}
-
-async function getLogInfo() {
-    try {
-        const response = await fetch(`http://localhost:${window.maestroApp.backendPort}/api/log-info`);
-        if (!response.ok) {
-            throw new Error('Failed to get log info');
-        }
-        return await response.json();
-    } catch (error) {
-        console.error('Error getting log info:', error);
-        return { filename: null, exists: false };
-    }
-}
-
-async function getLogContent() {
-    console.log('🔍 Attempting to fetch log content from port:', window.maestroApp.backendPort);
-    
-    if (!window.maestroApp.backendPort) {
-        console.error('❌ Backend port not available');
-        return 'Error: Backend port not available. Backend may not have started successfully.';
-    }
-    
-    try {
-        const url = `http://localhost:${window.maestroApp.backendPort}/api/log-content`;
-        console.log('🌐 Fetching log from:', url);
-        
-        const response = await fetch(url);
-        console.log('📡 Response status:', response.status);
-        
-        if (!response.ok) {
-            if (response.status === 404) {
-                return 'No log file found. Install some files to generate logs.';
-            }
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-        const text = await response.text();
-        console.log('✅ Log content retrieved, length:', text.length);
-        return text || 'Log file is empty.';
-    } catch (error) {
-        console.error('❌ Error getting log content:', error);
-        return `Error loading log: ${error.message}\n\nDebugging info:\n- Backend port: ${window.maestroApp.backendPort}\n- Error type: ${error.name}\n- Check browser console for more details`;
-    }
-}
-
-function closeLogModal() {
-    document.getElementById('logModal').style.display = 'none';
-}
-
-
-
-async function copyLogToClipboard() {
-    try {
-        const logContent = document.getElementById('logContent').textContent;
-        await navigator.clipboard.writeText(logContent);
-        maestroApp.showToast('Log copied to clipboard', 'success');
-    } catch (error) {
-        // Fallback for older browsers
-        try {
-            const textArea = document.createElement('textarea');
-            textArea.value = document.getElementById('logContent').textContent;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textArea);
-            maestroApp.showToast('Log copied to clipboard', 'success');
-        } catch (fallbackError) {
-            maestroApp.showToast('Failed to copy log to clipboard', 'error');
-        }
-    }
-}
+// Note: The original script had multiple DOMContentLoaded listeners and global function definitions.
+// This refactoring attempts to consolidate log modal logic within one DOMContentLoaded listener.
+// The MaestroApp class and its methods are assumed to be defined before this block.
+// Ensure that `window.maestroApp` is initialized before these global functions or modal listeners are fully operational if they depend on it.
+// The current structure where `window.maestroApp = new MaestroApp();` is at the top of the listener should be fine.
