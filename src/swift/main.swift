@@ -68,17 +68,22 @@ class MaestroApp: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDel
     }
     
     private func loadWebInterface() {
-        guard let resourcePath = Bundle.main.resourcePath else {
-            showAlert("Error", "Could not find application resources")
+        guard let resourceURL = Bundle.main.resourceURL else {
+            showAlert("Error", "Could not find application resources URL.")
             return
         }
-        
-        let indexPath = URL(fileURLWithPath: resourcePath).appendingPathComponent("index.html")
-        
+        // Path to web content inside the .app bundle
+        // Maestro.app/Contents/Resources/web/index.html
+        let webRootPath = resourceURL.appendingPathComponent("web")
+        let indexPath = webRootPath.appendingPathComponent("index.html")
+
         if FileManager.default.fileExists(atPath: indexPath.path) {
-            webView.loadFileURL(indexPath, allowingReadAccessTo: URL(fileURLWithPath: resourcePath))
+            // Allow read access to the 'web' directory.
+            webView.loadFileURL(indexPath, allowingReadAccessTo: webRootPath)
+            print("Attempting to load web interface from: \(indexPath)")
         } else {
-            showAlert("Error", "Could not find web interface files")
+            showAlert("Error", "Could not find web interface at \(indexPath.path)")
+            print("Error: Web interface not found at \(indexPath.path)")
         }
     }
     
@@ -123,89 +128,104 @@ class MaestroApp: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDel
     }
     
     @objc private func openLogFolderAction() {
-        let homeURL = FileManager.default.homeDirectoryForCurrentUser
-        let logFolderURL = homeURL.appendingPathComponent("Maestro_Logs")
-        
-        if !FileManager.default.fileExists(atPath: logFolderURL.path) {
-            try? FileManager.default.createDirectory(at: logFolderURL, withIntermediateDirectories: true)
+        // Path to logs consistent with Python backend logging
+        // ~/Library/Logs/MaestroInstaller/
+        guard let logsDirectory = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("Logs/MaestroInstaller") else {
+            showAlert("Error", "Could not determine logs directory.")
+            return
         }
         
-        NSWorkspace.shared.open(logFolderURL)
+        if !FileManager.default.fileExists(atPath: logsDirectory.path) {
+            try? FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: nil)
+        }
+        
+        NSWorkspace.shared.open(logsDirectory)
+        print("Opened log folder: \(logsDirectory.path)")
     }
     
     private func createEmergencyLogFile() {
         // Create an emergency log file if backend fails to start
-        let homeURL = FileManager.default.homeDirectoryForCurrentUser
-        let logFolderURL = homeURL.appendingPathComponent("Maestro_Logs")
+        // Store Swift-specific emergency logs in the same parent directory as Python logs.
+        guard let logsDirectory = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("Logs/MaestroInstaller") else {
+            print("Error: Could not determine logs directory for emergency log.")
+            return
+        }
         
         do {
-            try FileManager.default.createDirectory(at: logFolderURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: nil)
             
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
             let timestamp = dateFormatter.string(from: Date())
             
-            let emergencyLogURL = logFolderURL.appendingPathComponent("maestro_emergency_\(timestamp).log")
+            let emergencyLogURL = logsDirectory.appendingPathComponent("maestro_swift_emergency_\(timestamp).log")
             
             let logContent = """
-# Maestro Emergency Log - Backend Failed to Start
+# Maestro Swift Emergency Log - Backend Failed to Start or Other Critical Swift Error
 # Created: \(Date())
-# Error: Backend process could not be started
+# Error: See details below. This log is from the Swift component.
 
-\(Date()) - ERROR - 🚨 MAESTRO BACKEND FAILED TO START
-\(Date()) - ERROR - This emergency log was created because the Python backend could not be started
-\(Date()) - ERROR - Possible causes:
-\(Date()) - ERROR -   1. Python virtual environment not found
-\(Date()) - ERROR -   2. Missing Python dependencies (Flask, Flask-CORS)
-\(Date()) - ERROR -   3. Python script execution permissions
-\(Date()) - ERROR -   4. File path issues
+\(Date()) - ERROR - 🚨 MAESTRO SWIFT encountered a critical issue.
+\(Date()) - ERROR - This emergency log was created by the Swift frontend.
+\(Date()) - ERROR - Possible causes for backend start failure:
+\(Date()) - ERROR -   1. Bundled backend executable not found or not runnable.
+\(Date()) - ERROR -   2. Permissions issues with the bundled backend.
+\(Date()) - ERROR -   3. PyInstaller bundle is incomplete or corrupted.
 \(Date()) - INFO - 📱 macOS Version: \(ProcessInfo.processInfo.operatingSystemVersionString)
 \(Date()) - INFO - 🎯 App Bundle: \(Bundle.main.bundlePath)
-\(Date()) - INFO - 📁 Resource Path: \(Bundle.main.resourcePath ?? "Unknown")
-\(Date()) - INFO - Please check the Console app for more detailed error messages
+\(Date()) - INFO - 📦 Resource URL: \(Bundle.main.resourceURL?.path ?? "Unknown")
+\(Date()) - INFO - Please check the Console app for more detailed error messages from the app.
+\(Date()) - INFO - Also check Maestro_Install.log in this directory for Python backend logs.
 """
             
             FileManager.default.createFile(atPath: emergencyLogURL.path, contents: logContent.data(using: .utf8), attributes: nil)
-            print("Created emergency log file: \(emergencyLogURL.path)")
+            print("Created Swift emergency log file: \(emergencyLogURL.path)")
         } catch {
-            print("Failed to create emergency log file: \(error)")
+            print("Failed to create Swift emergency log file: \(error)")
         }
     }
 
     private func startBackendServer() {
-        guard let resourcePath = Bundle.main.resourcePath else {
-            createEmergencyLogFile()
-            showAlert("Error", "Could not find Python backend")
+        guard let resourceURL = Bundle.main.resourceURL else {
+            showAlert("Error", "Could not access application resources.")
+            createEmergencyLogFile() // Log this critical Swift-side failure
             return
         }
-        
-        let backendPath = URL(fileURLWithPath: resourcePath).appendingPathComponent("maestro_backend.py")
-        
-        guard FileManager.default.fileExists(atPath: backendPath.path) else {
+
+        // Path to the bundled Python backend executable
+        // Maestro.app/Contents/Resources/MaestroBackend/MaestroBackend
+        let backendExecutablePath = resourceURL.appendingPathComponent("MaestroBackend/MaestroBackend")
+        let backendDirectoryPath = resourceURL.appendingPathComponent("MaestroBackend")
+
+        print("Looking for backend executable at: \(backendExecutablePath.path)")
+
+        guard FileManager.default.isExecutableFile(atPath: backendExecutablePath.path) else {
+            showAlert("Error", "Backend executable not found or not executable at: \(backendExecutablePath.path)")
             createEmergencyLogFile()
-            showAlert("Error", "Python backend not found at: \(backendPath.path)")
             return
         }
         
         backendProcess = Process()
+        backendProcess?.executableURL = backendExecutablePath
+        // No arguments needed if PyInstaller bundles everything correctly and the script knows its relative paths
+        backendProcess?.arguments = []
         
-        // Try to use virtual environment Python first, fallback to system Python
-        let venvPythonPath = URL(fileURLWithPath: resourcePath).appendingPathComponent("venv/bin/python")
-        if FileManager.default.fileExists(atPath: venvPythonPath.path) {
-            print("Using virtual environment Python: \(venvPythonPath.path)")
-            backendProcess?.executableURL = venvPythonPath
-        } else {
-            print("Virtual environment not found, using system Python")
-            backendProcess?.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        }
-        
-        backendProcess?.arguments = [backendPath.path]
-        backendProcess?.currentDirectoryURL = URL(fileURLWithPath: resourcePath)
+        // Set the current working directory for the backend process to its own directory inside Resources
+        // This helps if the Python script uses relative paths for any resources it might load itself (unlikely for this backend but good practice)
+        backendProcess?.currentDirectoryURL = backendDirectoryPath
         
         // Set environment variables
         var environment = ProcessInfo.processInfo.environment
-        environment["PYTHONPATH"] = resourcePath
-        environment["PYTHONUNBUFFERED"] = "1"
+        // PYTHONPATH might not be strictly necessary for a PyInstaller --onedir bundle
+        // but setting it to the Resources/MaestroBackend might help in some cases if it looks for modules.
+        // For a fully bundled app, internal paths should be resolved by PyInstaller.
+        // environment["PYTHONPATH"] = backendDirectoryPath.path
+        environment["PYTHONUNBUFFERED"] = "1" // Keep this for immediate output
+        // Potentially set LC_CTYPE, LANG to prevent Unicode errors with subprocesses from Python
+        environment["LC_CTYPE"] = "UTF-8"
+        environment["LANG"] = "en_US.UTF-8"
         backendProcess?.environment = environment
         
         // Capture output to get the port
@@ -319,12 +339,13 @@ class MaestroApp: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDel
         case "requestPassword":
             requestPasswordDialog()
         case "openLogFolder":
-            openLogFolder()
+            openLogFolderAction() // Ensure this calls the updated method
         default:
             break
         }
     }
     
+    // requestPasswordDialog remains unchanged from previous modifications
     private func requestPasswordDialog() {
         DispatchQueue.main.async {
             let alert = NSAlert()
@@ -359,19 +380,36 @@ class MaestroApp: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDel
                     print("Error sending password response: \(error)")
                 }
             }
+
+            // Clear password from memory
+            passwordField.stringValue = ""
+            password = nil
+            // Forcing deallocation of alert and passwordField immediately is tricky
+            // as they are local to this async block. Swift ARC should handle it once
+            // the block finishes, but clearing the content is the most direct control.
+            print("Password field and local variable cleared.")
         }
     }
     
-    private func openLogFolder() {
-        let homeURL = FileManager.default.homeDirectoryForCurrentUser
-        let logFolderURL = homeURL.appendingPathComponent("Maestro_Logs")
-        
-        if !FileManager.default.fileExists(atPath: logFolderURL.path) {
-            try? FileManager.default.createDirectory(at: logFolderURL, withIntermediateDirectories: true)
-        }
-        
-        NSWorkspace.shared.open(logFolderURL)
-    }
+    // openLogFolder is a duplicate of openLogFolderAction - this one will be removed by the diff if not careful.
+    // The previous diff already modified openLogFolderAction correctly.
+    // The search block should target the old openLogFolder if it exists, or ensure only openLogFolderAction is present.
+    // Based on the provided code, openLogFolder is only called by userContentController, so that call should be openLogFolderAction.
+    // The diff will replace the definition of openLogFolderAction and createEmergencyLogFile.
+    // The openLogFolder method below is the old one, which is not directly called by menu anymore.
+    // Let's ensure the `message.body` handler for "openLogFolder" calls the correct one.
+    // It already calls `openLogFolder()` which needs to be updated or removed if `openLogFolderAction()` is the sole one.
+    // The diff changes `openLogFolderAction` and `createEmergencyLogFile`.
+    // The `openLogFolder` method called by `userContentController` should be `openLogFolderAction`.
+    // The existing code has:
+    // case "openLogFolder": openLogFolder()
+    // This should become:
+    // case "openLogFolder": openLogFolderAction()
+    // This is handled in this diff block itself.
+
+    // The definition of `openLogFolder()` that was previously here (and identical to the old `openLogFolderAction`)
+    // will be effectively replaced by the changes to `openLogFolderAction` and `createEmergencyLogFile`.
+    // No specific removal block for an old `openLogFolder()` is needed if its content is being replaced via `openLogFolderAction`.
     
     // MARK: - WKUIDelegate
     
