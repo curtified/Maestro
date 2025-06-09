@@ -1,11 +1,15 @@
 #!/bin/bash
-set -e # Exit on error
+set -ex # Exit on error and print commands
 
 echo "INFO: Starting Maestro App build process..."
 
-# Clean previous build
-echo "INFO: Cleaning previous build directory..."
+# --- Aggressive Clean ---
+# Clean previous build directories and artifacts from root
+echo "INFO: Aggressively cleaning previous build directories (build/, dist/)..."
 rm -rf build
+rm -rf dist
+
+# Recreate the main build directory
 mkdir -p build
 
 # Bundle Python backend
@@ -13,7 +17,7 @@ echo "INFO: Bundling Python backend with PyInstaller..."
 # Ensure the Python script itself is executable if it's not already
 chmod +x src/python/maestro_backend.py
 
-pyinstaller --noconfirm --onedir --windowed --name MaestroBackend src/python/maestro_backend.py --distpath build/dist_backend --workpath build/pyinstaller_build --additional-hooks-dir=./hooks --hidden-import=pkg_resources.py2_warn --hidden-import=flask_cors --hidden-import=werkzeug --hidden-import=jinja2 --hidden-import=itsdangerous --hidden-import=click --hidden-import=markupsafe
+pyinstaller --noconfirm --onedir --windowed --name MaestroBackend src/python/maestro_backend.py --distpath build/dist_backend --workpath build/pyinstaller_build --additional-hooks-dir=./hooks --hidden-import=pkg_resources.py2_warn --hidden-import=flask_cors --hidden-import=werkzeug --hidden-import=jinja2 --hidden-import=itsdangerous --hidden-import=click --hidden-import=markupsafe --debug all --log-level DEBUG
 # Added common Flask-related hidden imports just in case.
 
 # Create .app structure

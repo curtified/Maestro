@@ -1,0 +1,3 @@
+('/Users/flosstradamus/Projects/Coding '
+ 'Projects/Maestero/Maestro/build/pyinstaller_build/MaestroBackend/PYZ-00.pyz',
+ [])

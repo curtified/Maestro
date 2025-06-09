@@ -1,442 +1,267 @@
 import Cocoa
 import WebKit
 import Foundation
-import Security
 
 class MaestroApp: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     var window: NSWindow!
     var webView: WKWebView!
     var backendProcess: Process?
-    var backendPort: Int = 0
-    
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupWindow()
         setupWebView()
         setupMenuBar()
         startBackendServer()
     }
-    
+
     func applicationWillTerminate(_ notification: Notification) {
         terminateBackend()
     }
-    
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
-    
+
     private func setupWindow() {
-        let screenSize = NSScreen.main?.frame.size ?? NSSize(width: 1200, height: 800)
-        let windowSize = NSSize(width: min(1200, screenSize.width * 0.8), 
-                               height: min(900, screenSize.height * 0.8))
-        
+        let windowSize = NSSize(width: 1200, height: 800)
         window = NSWindow(
             contentRect: NSRect(origin: .zero, size: windowSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        
         window.title = "Maestro - Audio Plugin Installer"
         window.center()
         window.makeKeyAndOrderFront(nil)
-        
-        // Set minimum size
         window.minSize = NSSize(width: 800, height: 600)
     }
-    
+
     private func setupWebView() {
         let config = WKWebViewConfiguration()
-        
-        // Enable file access
-        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
-        config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
-        
-        // Add message handler for native communication
         let contentController = WKUserContentController()
         contentController.add(self, name: "maestroNative")
         config.userContentController = contentController
         
+        // Allow loading local files
+        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+
         webView = WKWebView(frame: window.contentView!.bounds, configuration: config)
         webView.uiDelegate = self
         webView.navigationDelegate = self
         webView.autoresizingMask = [.width, .height]
-        
         window.contentView?.addSubview(webView)
         
-        // Load the web interface
         loadWebInterface()
     }
-    
+
     private func loadWebInterface() {
         guard let resourceURL = Bundle.main.resourceURL else {
-            showAlert("Error", "Could not find application resources URL.")
+            showAlert(title: "Fatal Error", message: "Could not find application resources.")
             return
         }
-        // Path to web content inside the .app bundle
-        // Maestro.app/Contents/Resources/web/index.html
         let webRootPath = resourceURL.appendingPathComponent("web")
         let indexPath = webRootPath.appendingPathComponent("index.html")
 
         if FileManager.default.fileExists(atPath: indexPath.path) {
-            // Allow read access to the 'web' directory.
             webView.loadFileURL(indexPath, allowingReadAccessTo: webRootPath)
-            print("Attempting to load web interface from: \(indexPath)")
         } else {
-            showAlert("Error", "Could not find web interface at \(indexPath.path)")
-            print("Error: Web interface not found at \(indexPath.path)")
+            showAlert(title: "Fatal Error", message: "Web interface not found at \(indexPath.path)")
         }
     }
-    
+
     private func setupMenuBar() {
         let mainMenu = NSMenu()
         
-        // App menu
+        // App Menu
         let appMenuItem = NSMenuItem()
         mainMenu.addItem(appMenuItem)
+        
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
-        appMenu.addItem(NSMenuItem(title: "About Maestro", action: nil, keyEquivalent: ""))
+        
+        appMenu.addItem(NSMenuItem(title: "About Maestro", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
         appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(NSMenuItem(title: "Quit Maestro", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         
-        // Local Data menu
-        let localDataMenuItem = NSMenuItem(title: "Local Data", action: nil, keyEquivalent: "")
-        mainMenu.addItem(localDataMenuItem)
-        let localDataMenu = NSMenu(title: "Local Data")
-        localDataMenuItem.submenu = localDataMenu
+        // Logs Menu
+        let logsMenuItem = NSMenuItem()
+        mainMenu.addItem(logsMenuItem)
         
-        let viewLogItem = NSMenuItem(title: "View Log", action: #selector(viewLogAction), keyEquivalent: "l")
-        viewLogItem.target = self
-        localDataMenu.addItem(viewLogItem)
+        let logsMenu = NSMenu()
+        logsMenuItem.submenu = logsMenu
+        logsMenu.addItem(NSMenuItem(title: "View Logs", action: #selector(viewLogs), keyEquivalent: ""))
         
-        let openLogFolderItem = NSMenuItem(title: "Open Log Folder", action: #selector(openLogFolderAction), keyEquivalent: "L")
-        openLogFolderItem.keyEquivalentModifierMask = [.command, .shift]
-        openLogFolderItem.target = self
-        localDataMenu.addItem(openLogFolderItem)
-        
-        NSApplication.shared.mainMenu = mainMenu
+        NSApp.mainMenu = mainMenu
     }
-    
-    @objc private func viewLogAction() {
-        // Send message to web interface to open log modal
-        let jsCode = "if (window.openLogModal) { window.openLogModal(); }"
-        webView.evaluateJavaScript(jsCode) { _, error in
-            if let error = error {
-                print("Error opening log modal: \(error)")
-            }
-        }
-    }
-    
-    @objc private func openLogFolderAction() {
-        // Path to logs consistent with Python backend logging
-        // ~/Library/Logs/MaestroInstaller/
-        guard let logsDirectory = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("Logs/MaestroInstaller") else {
-            showAlert("Error", "Could not determine logs directory.")
-            return
-        }
-        
-        if !FileManager.default.fileExists(atPath: logsDirectory.path) {
-            try? FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: nil)
-        }
-        
-        NSWorkspace.shared.open(logsDirectory)
-        print("Opened log folder: \(logsDirectory.path)")
-    }
-    
-    private func createEmergencyLogFile() {
-        // Create an emergency log file if backend fails to start
-        // Store Swift-specific emergency logs in the same parent directory as Python logs.
-        guard let logsDirectory = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("Logs/MaestroInstaller") else {
-            print("Error: Could not determine logs directory for emergency log.")
-            return
-        }
-        
-        do {
-            try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: nil)
-            
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
-            let timestamp = dateFormatter.string(from: Date())
-            
-            let emergencyLogURL = logsDirectory.appendingPathComponent("maestro_swift_emergency_\(timestamp).log")
-            
-            let logContent = """
-# Maestro Swift Emergency Log - Backend Failed to Start or Other Critical Swift Error
-# Created: \(Date())
-# Error: See details below. This log is from the Swift component.
 
-\(Date()) - ERROR - 🚨 MAESTRO SWIFT encountered a critical issue.
-\(Date()) - ERROR - This emergency log was created by the Swift frontend.
-\(Date()) - ERROR - Possible causes for backend start failure:
-\(Date()) - ERROR -   1. Bundled backend executable not found or not runnable.
-\(Date()) - ERROR -   2. Permissions issues with the bundled backend.
-\(Date()) - ERROR -   3. PyInstaller bundle is incomplete or corrupted.
-\(Date()) - INFO - 📱 macOS Version: \(ProcessInfo.processInfo.operatingSystemVersionString)
-\(Date()) - INFO - 🎯 App Bundle: \(Bundle.main.bundlePath)
-\(Date()) - INFO - 📦 Resource URL: \(Bundle.main.resourceURL?.path ?? "Unknown")
-\(Date()) - INFO - Please check the Console app for more detailed error messages from the app.
-\(Date()) - INFO - Also check Maestro_Install.log in this directory for Python backend logs.
-"""
-            
-            FileManager.default.createFile(atPath: emergencyLogURL.path, contents: logContent.data(using: .utf8), attributes: nil)
-            print("Created Swift emergency log file: \(emergencyLogURL.path)")
-        } catch {
-            print("Failed to create Swift emergency log file: \(error)")
+    @objc func viewLogs() {
+        let logFilePath = "~/Library/Logs/MaestroInstaller/Maestro_Install.log"
+        let expandedLogFilePath = NSString(string: logFilePath).expandingTildeInPath
+        
+        if FileManager.default.fileExists(atPath: expandedLogFilePath) {
+            NSWorkspace.shared.openFile(expandedLogFilePath, withApplication: "Console")
+        } else {
+            showAlert(title: "Log File Not Found", message: "The log file does not exist. Try installing a file to generate logs.")
         }
     }
 
     private func startBackendServer() {
-        guard let resourceURL = Bundle.main.resourceURL else {
-            showAlert("Error", "Could not access application resources.")
-            createEmergencyLogFile() // Log this critical Swift-side failure
+        guard let backendPath = Bundle.main.path(forResource: "MaestroBackend", ofType: nil, inDirectory: "MaestroBackend") else {
+            showAlert(title: "Backend Error", message: "Backend executable not found in the app bundle.")
+            createEmergencyLogFile(message: "Backend executable not found.")
             return
         }
 
-        // Path to the bundled Python backend executable
-        // Maestro.app/Contents/Resources/MaestroBackend/MaestroBackend
-        let backendExecutablePath = resourceURL.appendingPathComponent("MaestroBackend/MaestroBackend")
-        let backendDirectoryPath = resourceURL.appendingPathComponent("MaestroBackend")
-
-        print("Looking for backend executable at: \(backendExecutablePath.path)")
-
-        guard FileManager.default.isExecutableFile(atPath: backendExecutablePath.path) else {
-            showAlert("Error", "Backend executable not found or not executable at: \(backendExecutablePath.path)")
-            createEmergencyLogFile()
+        guard FileManager.default.isExecutableFile(atPath: backendPath) else {
+            showAlert(title: "Backend Error", message: "Backend is not an executable file.")
+            createEmergencyLogFile(message: "Backend is not an executable file.")
             return
         }
-        
-        backendProcess = Process()
-        backendProcess?.executableURL = backendExecutablePath
-        // No arguments needed if PyInstaller bundles everything correctly and the script knows its relative paths
-        backendProcess?.arguments = []
-        
-        // Set the current working directory for the backend process to its own directory inside Resources
-        // This helps if the Python script uses relative paths for any resources it might load itself (unlikely for this backend but good practice)
-        backendProcess?.currentDirectoryURL = backendDirectoryPath
-        
-        // Set environment variables
+
+        killExistingBackendProcesses()
+
+        let lockFile = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Maestro/backend.lock")
+        try? FileManager.default.removeItem(at: lockFile)
+
         var environment = ProcessInfo.processInfo.environment
-        // PYTHONPATH might not be strictly necessary for a PyInstaller --onedir bundle
-        // but setting it to the Resources/MaestroBackend might help in some cases if it looks for modules.
-        // For a fully bundled app, internal paths should be resolved by PyInstaller.
-        // environment["PYTHONPATH"] = backendDirectoryPath.path
-        environment["PYTHONUNBUFFERED"] = "1" // Keep this for immediate output
-        // Potentially set LC_CTYPE, LANG to prevent Unicode errors with subprocesses from Python
+        environment["PYTHONUNBUFFERED"] = "1"
         environment["LC_CTYPE"] = "UTF-8"
-        environment["LANG"] = "en_US.UTF-8"
-        backendProcess?.environment = environment
         
-        // Capture output to get the port
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: backendPath)
+        process.environment = environment
+
         let outputPipe = Pipe()
         let errorPipe = Pipe()
-        backendProcess?.standardOutput = outputPipe
-        backendProcess?.standardError = errorPipe
-        
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        outputPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+            if let output = String(data: fileHandle.availableData, encoding: .utf8), !output.isEmpty {
+                print("[Backend STDOUT]: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+        }
+        errorPipe.fileHandleForReading.readabilityHandler = { fileHandle in
+            if let output = String(data: fileHandle.availableData, encoding: .utf8), !output.isEmpty {
+                print("[Backend STDERR]: \(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+        }
+
         do {
-            try backendProcess?.run()
-            print("Backend process started successfully")
-            
-            // Monitor the process to detect if it exits unexpectedly
-            DispatchQueue.global().async {
-                self.backendProcess?.waitUntilExit()
-                let exitCode = self.backendProcess?.terminationStatus ?? -1
-                if exitCode != 0 {
-                    print("Backend process exited with code: \(exitCode)")
-                    DispatchQueue.main.async {
-                        self.createEmergencyLogFile()
-                    }
-                }
+            try process.run()
+            backendProcess = process
+            print("Backend process started with PID: \(process.processIdentifier)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.checkBackendHealth()
             }
-            
-            // Read the port from backend output
-            DispatchQueue.global().async {
-                let outputData = outputPipe.fileHandleForReading.readData(ofLength: 1024)
-                let errorData = errorPipe.fileHandleForReading.readData(ofLength: 1024)
-                
-                if let output = String(data: outputData, encoding: .utf8), !output.isEmpty {
-                    print("Backend output: \(output)")
-                    self.parseBackendOutput(output)
-                }
-                
-                if let error = String(data: errorData, encoding: .utf8), !error.isEmpty {
-                    print("Backend error: \(error)")
-                    // If we see errors, create an emergency log
-                    DispatchQueue.main.async {
-                        self.createEmergencyLogFile()
-                    }
-                }
-            }
-            
         } catch {
-            print("Failed to start backend: \(error)")
-            createEmergencyLogFile()
-            showAlert("Error", "Failed to start backend server: \(error)")
+            showAlert(title: "Backend Error", message: "Failed to start backend: \(error.localizedDescription)")
+            createEmergencyLogFile(message: "Failed to start backend: \(error.localizedDescription)")
         }
     }
-    
-    private func parseBackendOutput(_ output: String) {
-        let lines = output.components(separatedBy: .newlines)
-        for line in lines {
-            if line.hasPrefix("MAESTRO_BACKEND_PORT=") {
-                let portString = String(line.dropFirst("MAESTRO_BACKEND_PORT=".count))
-                if let port = Int(portString.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    self.backendPort = port
-                    
-                    DispatchQueue.main.async {
-                        // Inject port into web interface
-                        print("🔗 Injecting backend port \(port) into web interface")
-                        let jsCode = """
-                            if (window.maestroApp) {
-                                window.maestroApp.backendPort = \(port);
-                                console.log('✅ Backend port set to:', \(port));
-                            } else {
-                                console.log('⚠️ maestroApp not ready, storing port globally');
-                                window.MAESTRO_BACKEND_PORT = \(port);
-                            }
-                        """
-                        self.webView.evaluateJavaScript(jsCode) { result, error in
-                            if let error = error {
-                                print("❌ Error injecting port: \(error)")
-                            } else {
-                                print("✅ Port injection completed")
-                            }
-                        }
-                    }
-                    break
+
+    private func checkBackendHealth() {
+        let healthURL = URL(string: "http://127.0.0.1:52000/api/health")!
+        let task = URLSession.shared.dataTask(with: healthURL) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    print("Backend health check failed: \(error.localizedDescription)")
+                    self?.showAlert(title: "Connection Error", message: "Unable to connect to the backend service. Please restart the app. Error: \(error.localizedDescription)")
+                    return
+                }
+
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    print("Backend health check successful.")
+                    self?.updateFrontendWithBackendPort(52000)
+                } else {
+                    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                    print("Backend health check failed with status: \(statusCode)")
+                    self?.showAlert(title: "Backend Error", message: "Backend service responded with status code: \(statusCode).")
                 }
             }
+        }
+        task.resume()
+    }
+    
+    private func updateFrontendWithBackendPort(_ port: Int) {
+        // This is a failsafe; the JS should already know the port.
+        // We can use this to trigger a ready event in the future.
+        let script = "console.log('Swift confirmed backend port \(port) is active.');"
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    private func killExistingBackendProcesses() {
+        let processName = "MaestroBackend"
+        let task = Process()
+        task.launchPath = "/usr/bin/killall"
+        task.arguments = [processName]
+        task.launch()
+        task.waitUntilExit()
+        if task.terminationStatus == 0 {
+            print("Terminated existing backend processes.")
         }
     }
     
     private func terminateBackend() {
-        backendProcess?.terminate()
+        if let process = backendProcess, process.isRunning {
+            process.terminate()
+            print("Terminated backend process.")
+        }
         backendProcess = nil
     }
-    
-    private func showAlert(_ title: String, _ message: String) {
+
+    private func showAlert(title: String, message: String) {
         DispatchQueue.main.async {
             let alert = NSAlert()
-            alert.alertStyle = .warning
+            alert.alertStyle = .critical
             alert.messageText = title
             alert.informativeText = message
-            alert.addButton(withTitle: "OK")
             alert.runModal()
         }
     }
-    
-    // MARK: - WKScriptMessageHandler
-    
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "maestroNative",
-              let messageBody = message.body as? [String: Any],
-              let action = messageBody["action"] as? String else {
-            return
-        }
+
+    private func createEmergencyLogFile(message: String) {
+        guard let logsDirectory = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?.appendingPathComponent("Logs/MaestroInstaller") else { return }
+        try? FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true, attributes: nil)
+        let logURL = logsDirectory.appendingPathComponent("maestro_swift_emergency.log")
+        let logContent = """
+        \(Date()) - CRITICAL ERROR
+        Message: \(message)
+        OS: \(ProcessInfo.processInfo.operatingSystemVersionString)
+        App Path: \(Bundle.main.bundlePath)
         
-        switch action {
-        case "requestPassword":
-            requestPasswordDialog()
-        case "openLogFolder":
-            openLogFolderAction() // Ensure this calls the updated method
-        default:
-            break
+        """
+        
+        if let fileHandle = try? FileHandle(forWritingTo: logURL) {
+            defer { fileHandle.closeFile() }
+            fileHandle.seekToEndOfFile()
+            if let data = logContent.data(using: .utf8) {
+                fileHandle.write(data)
+            }
+        } else {
+            try? logContent.data(using: .utf8)?.write(to: logURL)
         }
     }
-    
-    // requestPasswordDialog remains unchanged from previous modifications
-    private func requestPasswordDialog() {
-        DispatchQueue.main.async {
-            let alert = NSAlert()
-            alert.messageText = "Administrator Password Required"
-            alert.informativeText = "Installing to system folders requires administrator privileges."
-            alert.addButton(withTitle: "OK")
-            alert.addButton(withTitle: "Cancel")
-            
-            let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-            passwordField.placeholderString = "Enter password"
-            alert.accessoryView = passwordField
-            
-            let response = alert.runModal()
-            
-            var password: String? = nil
-            if response == .alertFirstButtonReturn {
-                password = passwordField.stringValue.isEmpty ? nil : passwordField.stringValue
-            }
-            
-            // Send response back to web interface
-            let jsCode = """
-                if (window.handleNativeResponse) {
-                    window.handleNativeResponse({
-                        action: 'passwordResponse',
-                        password: \(password != nil ? "\"\(password!)\"" : "null")
-                    });
-                }
-            """
-            
-            self.webView.evaluateJavaScript(jsCode) { _, error in
-                if let error = error {
-                    print("Error sending password response: \(error)")
-                }
-            }
 
-            // Clear password from memory
-            passwordField.stringValue = ""
-            password = nil
-            // Forcing deallocation of alert and passwordField immediately is tricky
-            // as they are local to this async block. Swift ARC should handle it once
-            // the block finishes, but clearing the content is the most direct control.
-            print("Password field and local variable cleared.")
-        }
+    // MARK: - WKScriptMessageHandler
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        // Not used in this simplified version, but kept for future native interactions.
+        print("Received message from web view: \(message.name)")
     }
     
-    // openLogFolder is a duplicate of openLogFolderAction - this one will be removed by the diff if not careful.
-    // The previous diff already modified openLogFolderAction correctly.
-    // The search block should target the old openLogFolder if it exists, or ensure only openLogFolderAction is present.
-    // Based on the provided code, openLogFolder is only called by userContentController, so that call should be openLogFolderAction.
-    // The diff will replace the definition of openLogFolderAction and createEmergencyLogFile.
-    // The openLogFolder method below is the old one, which is not directly called by menu anymore.
-    // Let's ensure the `message.body` handler for "openLogFolder" calls the correct one.
-    // It already calls `openLogFolder()` which needs to be updated or removed if `openLogFolderAction()` is the sole one.
-    // The diff changes `openLogFolderAction` and `createEmergencyLogFile`.
-    // The `openLogFolder` method called by `userContentController` should be `openLogFolderAction`.
-    // The existing code has:
-    // case "openLogFolder": openLogFolder()
-    // This should become:
-    // case "openLogFolder": openLogFolderAction()
-    // This is handled in this diff block itself.
-
-    // The definition of `openLogFolder()` that was previously here (and identical to the old `openLogFolderAction`)
-    // will be effectively replaced by the changes to `openLogFolderAction` and `createEmergencyLogFile`.
-    // No specific removal block for an old `openLogFolder()` is needed if its content is being replaced via `openLogFolderAction`.
-    
-    // MARK: - WKUIDelegate
-    
+    // MARK: - WKUIDelegate (for JS alerts)
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
         let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Maestro"
+        alert.messageText = "Maestro Notification"
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.runModal()
         completionHandler()
     }
-    
-    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Maestro"
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-        let response = alert.runModal()
-        completionHandler(response == .alertFirstButtonReturn)
-    }
 }
 
-// MARK: - Main Application Entry Point
-
+// MARK: - Main App Entry
 let app = NSApplication.shared
 let delegate = MaestroApp()
 app.delegate = delegate
